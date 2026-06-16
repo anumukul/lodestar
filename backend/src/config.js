@@ -46,7 +46,11 @@ const config = Object.freeze({
 
   braveApiKey: process.env.BRAVE_API_KEY ?? '',
 
-  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
+  corsOrigin: process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
+    : ['http://localhost:3000'],
+
+  jsonBodyLimit: process.env.JSON_BODY_LIMIT ?? '100kb',
 });
 
 export default config;

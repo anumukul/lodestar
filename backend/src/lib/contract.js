@@ -234,7 +234,7 @@ export async function registerServiceOnChain(
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────
 
-function mapAgent(raw) {
+export function mapAgent(raw) {
   return {
     address: raw.address?.toString() ?? raw.address,
     name: raw.name,
@@ -253,7 +253,7 @@ function mapAgent(raw) {
   };
 }
 
-function mapPolicy(raw) {
+export function mapPolicy(raw) {
   return {
     agent_address: raw.agent_address?.toString() ?? raw.agent_address,
     max_per_tx_stroops: String(raw.max_per_tx_stroops),
