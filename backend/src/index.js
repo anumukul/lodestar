@@ -10,7 +10,7 @@ import agentsRouter from './routes/agents.js';
 const app = express();
 
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: config.jsonBodyLimit }));
 
 app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
 
