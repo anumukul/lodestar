@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { FreighterStatus } from '@/lib/types';
-import { initKit, connectWithWallet, getBalance } from '@/lib/wallet';
+import { initKit, connectWithWallet, getBalance, disconnectWallet } from '@/lib/wallet';
 
 interface WalletContextValue {
   status: FreighterStatus;
@@ -43,6 +43,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
+    disconnectWallet();
     setStatus('not-connected');
     setAddress('');
     setBalance('');

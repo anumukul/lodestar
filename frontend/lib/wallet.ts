@@ -51,6 +51,11 @@ export function initKit() {
   _initialized = true;
 }
 
+export function disconnectWallet(): void {
+  _initialized = false;
+  console.info(JSON.stringify({ event: 'wallet_disconnected' }));
+}
+
 export async function connectWithWallet(walletId: string): Promise<string> {
   try {
     if (typeof window === 'undefined') {

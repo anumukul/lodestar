@@ -1,15 +1,32 @@
-import { connectWithWallet, WalletError, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
-import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
+jest.mock('@creit-tech/stellar-wallets-kit/sdk', () => ({
+  StellarWalletsKit: {
+    init: jest.fn(),
+    setWallet: jest.fn(),
+    fetchAddress: jest.fn(),
+  }
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/freighter', () => ({
+  FreighterModule: jest.fn(),
+  FREIGHTER_ID: 'freighter',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/albedo', () => ({
+  AlbedoModule: jest.fn(),
+  ALBEDO_ID: 'albedo',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/xbull', () => ({
+  xBullModule: jest.fn(),
+  XBULL_ID: 'xbull',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/modules/lobstr', () => ({
+  LobstrModule: jest.fn(),
+  LOBSTR_ID: 'lobstr',
+}));
+jest.mock('@creit-tech/stellar-wallets-kit/types', () => ({
+  Networks: { TESTNET: 'Test SDF Network ; September 2015' },
+}));
 
-jest.mock('@creit-tech/stellar-wallets-kit/sdk', () => {
-  return {
-    StellarWalletsKit: {
-      init: jest.fn(),
-      setWallet: jest.fn(),
-      fetchAddress: jest.fn(),
-    }
-  };
-});
+import { connectWithWallet, disconnectWallet, WalletError, WalletErrorType, FREIGHTER_ID } from '../lib/wallet';
+import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
 
 describe('wallet connection', () => {
   const originalWindow = global.window;
@@ -65,5 +82,42 @@ describe('wallet connection', () => {
     await expect(connectWithWallet(FREIGHTER_ID)).rejects.toMatchObject({
       type: WalletErrorType.CONNECTION_FAILED
     });
+  });
+});
+
+describe('wallet disconnect', () => {
+  const originalWindow = global.window;
+  const originalNavigator = global.navigator;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    disconnectWallet();
+    (global as any).window = { ...originalWindow };
+    (global as any).navigator = { ...originalNavigator, userAgent: 'Mozilla/5.0' };
+  });
+
+  afterAll(() => {
+    (global as any).window = originalWindow;
+    (global as any).navigator = originalNavigator;
+  });
+
+  it('resets kit state so next connect re-initializes', async () => {
+    (StellarWalletsKit.fetchAddress as jest.Mock).mockResolvedValue({ address: 'G123' });
+
+    await connectWithWallet(FREIGHTER_ID);
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+
+    disconnectWallet();
+    jest.clearAllMocks();
+
+    await connectWithWallet(FREIGHTER_ID);
+    expect(StellarWalletsKit.init).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs disconnect event', () => {
+    const spy = jest.spyOn(console, 'info').mockImplementation();
+    disconnectWallet();
+    expect(spy).toHaveBeenCalledWith(JSON.stringify({ event: 'wallet_disconnected' }));
+    spy.mockRestore();
   });
 });
