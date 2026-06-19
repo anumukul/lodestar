@@ -53,6 +53,11 @@ export default function AgentsPage() {
     return () => clearInterval(interval);
   }, [load]);
 
+  const retryLoad = () => {
+    setLoading(true);
+    load();
+  };
+
   const sorted = sortAgents(agents, sort);
 
   return (
@@ -128,6 +133,13 @@ export default function AgentsPage() {
               Deploy the agents contract and set <span className="mono">AGENTS_CONTRACT_ID</span> in your .env
             </p>
           ) : null}
+          <button
+            type="button"
+            onClick={retryLoad}
+            className="btn-primary px-5 py-2.5 text-sm mt-5"
+          >
+            Retry
+          </button>
         </div>
       )}
 
