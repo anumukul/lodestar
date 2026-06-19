@@ -61,6 +61,9 @@ vi.mock('../middleware/addressValidator.js', () => ({
   isValidStellarAddress: () => true,
 }));
 
+// Reset idempotency store between tests so keys don't bleed across cases
+import { _reset as resetIdempotencyStore } from '../lib/idempotency.js';
+
 function signBody(body) {
   return crypto
     .createHmac('sha256', 'hmac_test_secret')
@@ -79,6 +82,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetIdempotencyStore();
 });
 
 function makeAgent(overrides = {}) {
@@ -193,13 +197,24 @@ describe('GET /api/agents/:address/score', () => {
   });
 });
 
-describe('POST /api/agents/:address/payment (HMAC + rate limit)', () => {
+describe('POST /api/agents/:address/payment (HMAC + rate limit + idempotency)', () => {
   const agentAddress = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
   const validBody = { amountUsdc: '0.001', success: true, serviceId: 1 };
+  const idempotencyKey = 'test-idem-key-001';
+
+  function makeRequest(body = validBody, key = idempotencyKey) {
+    const signature = signBody(body);
+    return request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .set('X-Idempotency-Key', key)
+      .send(body);
+  }
 
   it('should return 401 when X-Lodestar-Signature is missing', async () => {
     const res = await request(app)
       .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Idempotency-Key', idempotencyKey)
       .send(validBody);
 
     expect(res.status).toBe(401);
@@ -211,6 +226,7 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit)', () => {
     const res = await request(app)
       .post(`/api/agents/${agentAddress}/payment`)
       .set('X-Lodestar-Signature', 'wrong_signature')
+      .set('X-Idempotency-Key', idempotencyKey)
       .send(validBody);
 
     expect(res.status).toBe(401);
@@ -218,53 +234,137 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit)', () => {
     expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
   });
 
-  it('should return 400 when serviceId is missing', async () => {
-    const signature = signBody({ amountUsdc: '0.001', success: true });
-    const res = await request(app)
-      .post(`/api/agents/${agentAddress}/payment`)
-      .set('X-Lodestar-Signature', signature)
-      .send({ amountUsdc: '0.001', success: true });
-
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('INVALID_BODY');
-  });
-
-  it('should succeed with valid HMAC signature', async () => {
-    mockRecordPaymentOnChain.mockResolvedValueOnce(true);
-    mockGetAgent.mockResolvedValueOnce({ score: 110 });
-
+  it('should return 400 when X-Idempotency-Key header is missing', async () => {
     const signature = signBody(validBody);
     const res = await request(app)
       .post(`/api/agents/${agentAddress}/payment`)
       .set('X-Lodestar-Signature', signature)
       .send(validBody);
 
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('IDEMPOTENCY_KEY_MISSING');
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when X-Idempotency-Key is empty', async () => {
+    const signature = signBody(validBody);
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .set('X-Idempotency-Key', '')
+      .send(validBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('IDEMPOTENCY_KEY_MISSING');
+    expect(mockRecordPaymentOnChain).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when serviceId is missing', async () => {
+    const body = { amountUsdc: '0.001', success: true };
+    const signature = signBody(body);
+    const res = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', signature)
+      .set('X-Idempotency-Key', idempotencyKey)
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+  });
+
+  it('should succeed with valid HMAC signature and idempotency key', async () => {
+    mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+    mockGetAgent.mockResolvedValueOnce({ score: 110 });
+
+    const res = await makeRequest();
+
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.newScore).toBe(110);
+    expect(res.body.idempotent).toBeUndefined();
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledOnce();
     expect(mockRecordPaymentOnChain).toHaveBeenCalledWith(
       agentAddress, 1, expect.any(BigInt), true
     );
+  });
+
+  it('should replay the cached response on a duplicate request (no second chain call)', async () => {
+    mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+    mockGetAgent.mockResolvedValueOnce({ score: 110 });
+
+    // First request
+    const first = await makeRequest();
+    expect(first.status).toBe(200);
+    expect(first.body.newScore).toBe(110);
+
+    // Retry with the exact same idempotency key — chain must NOT be called again
+    const retry = await makeRequest();
+    expect(retry.status).toBe(200);
+    expect(retry.body.success).toBe(true);
+    expect(retry.body.newScore).toBe(110);
+    expect(retry.body.idempotent).toBe(true);
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledOnce(); // still only once
+  });
+
+  it('should allow a different key for a logically separate payment', async () => {
+    mockRecordPaymentOnChain.mockResolvedValue(true);
+    mockGetAgent.mockResolvedValue({ score: 120 });
+
+    const res1 = await makeRequest(validBody, 'key-payment-A');
+    const res2 = await makeRequest(validBody, 'key-payment-B');
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledTimes(2);
+  });
+
+  it('should scope keys per agent — same key for different agents does not collide', async () => {
+    const agentB = 'GBXDMZV5VQTPV6Q2W5KQEZUMHBG7TDMKH6Q3JZXTPQ7YRPLSAVQLKL2';
+    mockRecordPaymentOnChain.mockResolvedValue(true);
+    mockGetAgent.mockResolvedValue({ score: 100 });
+
+    const bodyA = validBody;
+    const bodyB = { amountUsdc: '0.002', success: false, serviceId: 2 };
+    const sigA = signBody(bodyA);
+    const sigB = signBody(bodyB);
+
+    const resA = await request(app)
+      .post(`/api/agents/${agentAddress}/payment`)
+      .set('X-Lodestar-Signature', sigA)
+      .set('X-Idempotency-Key', 'shared-key')
+      .send(bodyA);
+
+    const resB = await request(app)
+      .post(`/api/agents/${agentB}/payment`)
+      .set('X-Lodestar-Signature', sigB)
+      .set('X-Idempotency-Key', 'shared-key') // same key, different agent
+      .send(bodyB);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledTimes(2); // both go through
   });
 
   it('should return 429 when rate limit is exceeded', async () => {
     const body = { amountUsdc: '0.001', success: true, serviceId: 2 };
     const signature = signBody(body);
 
-    // Fire 11 requests (limit is 10)
+    // Fire 10 requests with unique idempotency keys (limit is 10)
     for (let i = 0; i < 10; i++) {
       mockRecordPaymentOnChain.mockResolvedValueOnce(true);
       mockGetAgent.mockResolvedValueOnce({ score: 100 });
       await request(app)
         .post(`/api/agents/${agentAddress}/payment`)
         .set('X-Lodestar-Signature', signature)
+        .set('X-Idempotency-Key', `rate-limit-key-${i}`)
         .send(body);
     }
 
-    // 11th request should be rate-limited
+    // 11th request with a fresh key should be rate-limited
     const res = await request(app)
       .post(`/api/agents/${agentAddress}/payment`)
       .set('X-Lodestar-Signature', signature)
+      .set('X-Idempotency-Key', 'rate-limit-key-11')
       .send(body);
 
     expect(res.status).toBe(429);

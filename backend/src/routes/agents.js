@@ -20,6 +20,13 @@ import { paymentRateLimiter } from '../middleware/paymentRateLimiter.js';
 import { validateAgentAddressParam, isValidStellarAddress } from '../middleware/addressValidator.js';
 import logger from '../lib/logger.js';
 import { handleContractError } from '../lib/ContractError.js';
+import {
+  isValidIdempotencyKey,
+  getEntry,
+  markPending,
+  markComplete,
+  markFailed,
+} from '../lib/idempotency.js';
 
 const router = Router();
 
@@ -237,35 +244,93 @@ router.post('/agents/register', requireAgentsContract, async (req, res) => {
 });
 
 // POST /api/agents/:address/payment — Body: { amountUsdc, success, serviceId }
+// Requires header: X-Idempotency-Key — a unique key per logical payment (max 255 printable-ASCII chars).
+// Retrying with the same key within 24 h replays the original response without hitting the chain again.
 router.post(
   '/agents/:address/payment',
   requireAgentsContract,
   hmacAuth,
   paymentRateLimiter(10, 60_000),
   async (req, res) => {
+    const { address } = req.params;
+
+    // ── 1. Idempotency key validation ─────────────────────────────────────────
+    const idempotencyKey = req.headers['x-idempotency-key'];
+    if (!idempotencyKey) {
+      return res.status(400).json({
+        error: 'Missing X-Idempotency-Key header',
+        code: 'IDEMPOTENCY_KEY_MISSING',
+      });
+    }
+    if (!isValidIdempotencyKey(idempotencyKey)) {
+      return res.status(400).json({
+        error: 'X-Idempotency-Key must be 1–255 printable ASCII characters (no spaces)',
+        code: 'IDEMPOTENCY_KEY_INVALID',
+      });
+    }
+
+    // ── 2. Scope the key to this agent address so keys can't collide across agents ──
+    const scopedKey = `${address}:${idempotencyKey}`;
+
+    // ── 3. Check for an existing entry ────────────────────────────────────────
+    const existing = getEntry(scopedKey);
+    if (existing) {
+      if (existing.status === 'pending') {
+        // A concurrent request with the same key is still in-flight.
+        logger.warn({ address, idempotencyKey }, 'Duplicate payment request while in-flight');
+        return res.status(409).json({
+          error: 'A payment with this idempotency key is already being processed',
+          code: 'IDEMPOTENCY_CONFLICT',
+        });
+      }
+      if (existing.status === 'complete') {
+        logger.info({ address, idempotencyKey }, 'Replaying idempotent payment response');
+        return res.json({ success: true, newScore: existing.result.newScore, idempotent: true });
+      }
+      if (existing.status === 'failed') {
+        // Replay the original error so the caller can inspect it without re-hitting the chain.
+        const { httpStatus, error, code } = existing.result;
+        return res.status(httpStatus).json({ error, code, idempotent: true });
+      }
+    }
+
+    // ── 4. Body validation ────────────────────────────────────────────────────
+    const { amountUsdc, success, serviceId } = req.body;
+
+    if (typeof amountUsdc !== 'string' && typeof amountUsdc !== 'number') {
+      return res.status(400).json({ error: '`amountUsdc` is required', code: 'INVALID_BODY' });
+    }
+    if (typeof success !== 'boolean') {
+      return res.status(400).json({ error: '`success` must be boolean', code: 'INVALID_BODY' });
+    }
+    if (!serviceId || typeof serviceId !== 'number') {
+      return res.status(400).json({ error: '`serviceId` is required', code: 'INVALID_BODY' });
+    }
+
+    // ── 5. Reserve the key before touching the chain ──────────────────────────
+    markPending(scopedKey);
+
     try {
-      const { address } = req.params;
-      const { amountUsdc, success, serviceId } = req.body;
-
-      if (typeof amountUsdc !== 'string' && typeof amountUsdc !== 'number') {
-        return res.status(400).json({ error: '`amountUsdc` is required', code: 'INVALID_BODY' });
-      }
-      if (typeof success !== 'boolean') {
-        return res.status(400).json({ error: '`success` must be boolean', code: 'INVALID_BODY' });
-      }
-      if (!serviceId || typeof serviceId !== 'number') {
-        return res.status(400).json({ error: '`serviceId` is required', code: 'INVALID_BODY' });
-      }
-
       const amountStroops = BigInt(Math.round(parseFloat(String(amountUsdc)) * 10_000_000));
       await recordPaymentOnChain(address, serviceId, amountStroops, success);
       const agent = await getAgent(address);
       const newScore = agent?.score ?? 0;
-      logger.info({ address, serviceId, amountUsdc, success, newScore }, 'Payment recorded on-chain');
-      res.json({ success: true, newScore });
+
+      markComplete(scopedKey, { newScore });
+      logger.info({ address, serviceId, amountUsdc, success, newScore, idempotencyKey }, 'Payment recorded on-chain');
+      return res.json({ success: true, newScore });
     } catch (err) {
-      logger.error({ err, address: req.params.address }, 'POST /api/agents/:address/payment failed');
-      return handleContractError(err, res, 'Failed to record payment', 'RECORD_ERROR');
+      // Derive the HTTP status the error would produce so we can replay it faithfully.
+      const httpStatus =
+        err.name === 'ContractError' && err.code === 'TRANSACTION_TIMEOUT' ? 504
+        : err.name === 'ContractError' ? 400
+        : 500;
+      const error = err.name === 'ContractError' ? err.message : 'Failed to record payment';
+      const code  = err.name === 'ContractError' ? err.code  : 'RECORD_ERROR';
+
+      markFailed(scopedKey, { httpStatus, error, code });
+      logger.error({ err, address, idempotencyKey }, 'POST /api/agents/:address/payment failed');
+      return res.status(httpStatus).json({ error, code });
     }
   }
 );
