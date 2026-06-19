@@ -204,14 +204,9 @@ export const contractHelpers = {
         return true;
       }
 
-      if (services.length < pageSize) {
-        return false;
-      }
-
       page += 1;
     }
   },
-};
 
 export async function activeServiceExists(provider, endpoint) {
   return contractHelpers.activeServiceExists(provider, endpoint);
