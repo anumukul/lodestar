@@ -1,6 +1,6 @@
 export default function AgentCardSkeleton() {
   return (
-    <div className="card p-6 flex flex-col gap-4 animate-pulse">
+    <div data-testid="agent-card-skeleton" className="card p-6 flex flex-col gap-4 animate-pulse">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0 space-y-2">

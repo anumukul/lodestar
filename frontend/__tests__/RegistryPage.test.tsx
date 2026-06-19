@@ -15,8 +15,7 @@ describe('RegistryPage loading state', () => {
   it('shows skeleton cards while loading', () => {
     (fetchServices as jest.Mock).mockReturnValue(new Promise(() => {}));
 
-    const { container } = render(<RegistryPage />);
-    const skeletons = container.querySelectorAll('.animate-pulse');
-    expect(skeletons.length).toBe(4);
+    const { getAllByTestId } = render(<RegistryPage />);
+    expect(getAllByTestId('service-card-skeleton')).toHaveLength(4);
   });
 });

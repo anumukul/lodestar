@@ -1,6 +1,6 @@
 export default function ServiceCardSkeleton() {
   return (
-    <div className="card p-6 flex flex-col gap-4 animate-pulse">
+    <div data-testid="service-card-skeleton" className="card p-6 flex flex-col gap-4 animate-pulse">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="h-5 w-40 bg-border/60 rounded" />

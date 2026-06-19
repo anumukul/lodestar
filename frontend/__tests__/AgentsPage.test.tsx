@@ -42,9 +42,8 @@ describe('AgentsPage loading state', () => {
     (fetchAgents as jest.Mock).mockReturnValue(new Promise(() => {}));
     (fetchAgentStats as jest.Mock).mockReturnValue(new Promise(() => {}));
 
-    const { container } = render(<AgentsPage />);
-    const skeletons = container.querySelectorAll('.animate-pulse');
-    expect(skeletons.length).toBe(3);
+    const { getAllByTestId } = render(<AgentsPage />);
+    expect(getAllByTestId('agent-card-skeleton')).toHaveLength(3);
   });
 });
 
