@@ -44,7 +44,7 @@ describe('AgentsPage loading state', () => {
 
     const { container } = render(<AgentsPage />);
     const skeletons = container.querySelectorAll('.animate-pulse');
-    expect(skeletons.length).toBeGreaterThanOrEqual(3);
+    expect(skeletons.length).toBe(3);
   });
 });
 

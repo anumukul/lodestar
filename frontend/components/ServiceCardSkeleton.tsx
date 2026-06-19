@@ -14,7 +14,7 @@ export default function ServiceCardSkeleton() {
       </div>
 
       {/* Endpoint bar */}
-      <div className="flex items-center gap-2 bg-background rounded-lg px-3 py-2 border border-border">
+      <div data-testid="skeleton-endpoint" className="flex items-center gap-2 bg-background rounded-lg px-3 py-2 border border-border">
         <div className="h-3.5 w-48 bg-border/50 rounded" />
         <div className="h-3.5 w-10 bg-border/50 rounded ml-auto" />
       </div>
@@ -32,7 +32,7 @@ export default function ServiceCardSkeleton() {
       </div>
 
       {/* Button */}
-      <div className="h-10 w-full bg-border/40 rounded-full" />
+      <div data-testid="skeleton-button" className="h-10 w-full bg-border/40 rounded-full" />
     </div>
   );
 }

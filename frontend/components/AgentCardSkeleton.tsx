@@ -7,7 +7,7 @@ export default function AgentCardSkeleton() {
           <div className="h-5 w-36 bg-border/60 rounded" />
           <div className="h-3 w-28 bg-border/50 rounded" />
         </div>
-        <div className="h-6 w-14 bg-border/60 rounded-full" />
+        <div data-testid="skeleton-badge" className="h-6 w-14 bg-border/60 rounded-full" />
       </div>
 
       {/* Description */}
@@ -17,7 +17,7 @@ export default function AgentCardSkeleton() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div data-testid="skeleton-stats" className="grid grid-cols-3 gap-3">
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="bg-background rounded-lg px-3 py-2 border border-border text-center space-y-1.5">
             <div className="h-4 w-10 bg-border/60 rounded mx-auto" />
