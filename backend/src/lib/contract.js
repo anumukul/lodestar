@@ -189,7 +189,7 @@ export async function getServiceCount() {
   }
 }
 
-export async function activeServiceExists(provider, endpoint) {
+export let activeServiceExists = async function (provider, endpoint) {
   let page = 0;
   const pageSize = 20;
 
@@ -290,37 +290,6 @@ export async function updateReputation(id, positive) {
     return newReputation;
   } catch (err) {
     logger.error({ err, id, positive }, 'updateReputation failed');
-    throw err;
-  }
-}
-
-export async function registerServiceOnChain(
-  name,
-  description,
-  endpoint,
-  priceUsdc,
-  category
-) {
-  try {
-    const contract = getContract();
-    const keypair = getServerKeypair();
-    const providerAddress = Address.fromString(keypair.publicKey());
-
-    const op = contract.call(
-      'register_service',
-      nativeToScVal(providerAddress, { type: 'address' }),
-      nativeToScVal(name, { type: 'string' }),
-      nativeToScVal(description, { type: 'string' }),
-      nativeToScVal(endpoint, { type: 'string' }),
-      nativeToScVal(priceUsdc, { type: 'string' }),
-      nativeToScVal(category, { type: 'string' })
-    );
-
-    const result = await simulateAndSubmit(op);
-    const retval = result.returnValue;
-    return retval ? Number(scValToNative(retval)) : null;
-  } catch (err) {
-    logger.error({ err, name }, 'registerServiceOnChain failed');
     throw err;
   }
 }

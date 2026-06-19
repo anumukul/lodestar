@@ -56,7 +56,8 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 ### Provider flow
 1. Deploy any HTTP service that returns `402 Payment Required` with x402 headers
 2. Call `register_service` on the Lodestar Soroban contract with your endpoint, price, and category
-3. Your service is now permanently discoverable by any agent querying the registry
+3. If an active service with the same provider and endpoint already exists, registration is rejected to prevent duplicate active entries
+4. Your service is now permanently discoverable by any agent querying the registry
 
 ### Agent flow
 1. Call `list_services(category)` — returns active services sorted by reputation
