@@ -56,6 +56,30 @@ describe('registerServiceOnChain duplicate checks', () => {
   });
 });
 
+describe('activeServiceExists pagination', () => {
+  it('continues scanning when a page is shorter than the requested page size', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const endpoint = 'https://test.example.com';
+
+    const listServicesSpy = vi
+      .spyOn(contractLib, 'listServices')
+      .mockResolvedValueOnce([
+        { provider: 'GAOTHER', endpoint: 'https://other.example.com' },
+      ])
+      .mockResolvedValueOnce([
+        { provider, endpoint },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      contractLib.contractHelpers.activeServiceExists(provider, endpoint)
+    ).resolves.toBe(true);
+
+    expect(listServicesSpy).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
+    expect(listServicesSpy).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+  });
+});
+
 describe('mapAgent', () => {
   it('should map a basic agent object', () => {
     const raw = {
