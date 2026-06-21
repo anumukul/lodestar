@@ -132,7 +132,9 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
 
-    const { positive, agent } = req.body;
+    // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
+    // than a TypeError surfacing as a generic 500.
+    const { positive, agent } = req.body ?? {};
     if (typeof positive !== "boolean") {
       return res
         .status(400)

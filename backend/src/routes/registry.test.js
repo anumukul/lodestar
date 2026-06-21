@@ -4,6 +4,7 @@ import request from 'supertest';
 
 const mockListServices = vi.fn();
 const mockGetService = vi.fn();
+const mockGetServiceCount = vi.fn();
 const mockGetReputationHistory = vi.fn();
 const mockUpdateReputation = vi.fn();
 const mockIsAllowedReputationAgent = vi.fn();
@@ -11,6 +12,7 @@ const mockIsAllowedReputationAgent = vi.fn();
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   getService: (...args) => mockGetService(...args),
+  getServiceCount: (...args) => mockGetServiceCount(...args),
   updateReputation: (...args) => mockUpdateReputation(...args),
   isAllowedReputationAgent: (...args) => mockIsAllowedReputationAgent(...args),
 }));

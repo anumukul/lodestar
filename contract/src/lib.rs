@@ -46,14 +46,15 @@ pub struct LodestarRegistry;
 
 #[contractimpl]
 impl LodestarRegistry {
-    /// One-time setup: store the address of the LodestarAgents contract so
-    /// `update_reputation` can verify voters are registered agents. Mirrors the
-    /// `init` pattern used by the agents contract. Must be called once by the
-    /// deployer immediately after deployment.
-    pub fn init(env: Env, agents_contract: Address) {
-        if env.storage().persistent().has(&DataKey::AgentsContract) {
-            panic!("already initialized");
-        }
+    /// Deploy-time setup: store the address of the LodestarAgents contract so
+    /// `update_reputation` can verify voters are registered agents.
+    ///
+    /// This is a contract constructor — it runs exactly once, atomically, as part
+    /// of deployment, and can never be invoked by a later caller. That closes the
+    /// trust-anchor takeover risk a public `init` would carry (a front-runner
+    /// pointing the registry at a malicious agents contract where everyone is
+    /// "registered"). The agents address is fixed for the contract's lifetime.
+    pub fn __constructor(env: Env, agents_contract: Address) {
         env.storage()
             .persistent()
             .set(&DataKey::AgentsContract, &agents_contract);
@@ -62,7 +63,7 @@ impl LodestarRegistry {
             .extend_ttl(&DataKey::AgentsContract, MAX_TTL, MAX_TTL);
     }
 
-    /// Address of the configured LodestarAgents contract, if `init` has run.
+    /// Address of the LodestarAgents contract this registry was deployed against.
     pub fn get_agents_contract(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::AgentsContract)
     }
@@ -225,7 +226,7 @@ impl LodestarRegistry {
             .storage()
             .persistent()
             .get(&DataKey::AgentsContract)
-            .expect("agents contract not set — call init() first");
+            .expect("agents contract not configured at deployment");
 
         let registered: bool = env.invoke_contract(
             &agents_contract,
@@ -377,7 +378,7 @@ mod test {
     #[test]
     fn test_list_services_empty() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             // Test with no services registered
@@ -389,7 +390,7 @@ mod test {
     #[test]
     fn test_list_services_single_entry() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -405,7 +406,7 @@ mod test {
     #[test]
     fn test_list_services_reputation_sorting() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -427,7 +428,7 @@ mod test {
     #[test]
     fn test_list_services_tied_reputation() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -453,7 +454,7 @@ mod test {
     #[test]
     fn test_list_services_category_filter() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -491,7 +492,7 @@ mod test {
     #[test]
     fn test_list_services_inactive_filtered() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -510,7 +511,7 @@ mod test {
     #[test]
     fn test_list_services_category_filter_with_reputation() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -536,7 +537,7 @@ mod test {
     #[test]
     fn test_list_services_nonexistent_category() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LodestarRegistry);
+        let contract_id = env.register(LodestarRegistry, (Address::generate(&env),));
 
         env.clone().as_contract(&contract_id, || {
             let provider = Address::generate(&env);
@@ -580,9 +581,8 @@ mod test {
         let agents_id = env.register(MockAgents, ());
         let agents = MockAgentsClient::new(env, &agents_id);
 
-        let registry_id = env.register(LodestarRegistry, ());
+        let registry_id = env.register(LodestarRegistry, (agents_id.clone(),));
         let registry = LodestarRegistryClient::new(env, &registry_id);
-        registry.init(&agents_id);
 
         (registry, agents)
     }
@@ -689,17 +689,34 @@ mod test {
     }
 
     #[test]
-    fn test_init_is_one_time() {
+    fn test_constructor_sets_agents_contract_immutably() {
         let env = Env::default();
-        let registry_id = env.register(LodestarRegistry, ());
+        // The agents contract is fixed at deployment by the constructor — there is
+        // no post-deploy setter, so the trust anchor can never be swapped.
+        let agents = Address::generate(&env);
+        let registry_id = env.register(LodestarRegistry, (agents.clone(),));
         let registry = LodestarRegistryClient::new(&env, &registry_id);
+        assert_eq!(registry.get_agents_contract(), Some(agents));
+    }
 
-        let agents_a = Address::generate(&env);
-        registry.init(&agents_a);
-        assert_eq!(registry.get_agents_contract(), Some(agents_a));
+    #[test]
+    fn test_update_reputation_requires_caller_auth() {
+        // Regression guard for #104: without env.mock_all_auths(), the
+        // caller.require_auth() in update_reputation must reject the vote. This
+        // fails if require_auth() is ever removed, even though the agent is
+        // registered and outside any cooldown.
+        let env = Env::default();
 
-        // A second init must fail so the trust anchor can't be swapped.
-        let agents_b = Address::generate(&env);
-        assert!(registry.try_init(&agents_b).is_err());
+        // Build the registry + a service + a registered agent under mocked auth…
+        env.mock_all_auths();
+        let (registry, agents) = deploy_registry(&env);
+        let id = register_a_service(&env, &registry);
+        let agent = Address::generate(&env);
+        agents.set_registered(&agent, &true);
+
+        // …then drop all auth mocks so require_auth is genuinely enforced.
+        env.set_auths(&[]);
+        assert!(registry.try_update_reputation(&id, &true, &agent).is_err());
+        assert_eq!(registry.get_service(&id).reputation, 0);
     }
 }

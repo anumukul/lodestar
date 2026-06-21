@@ -13,20 +13,19 @@ if (!process.env.AGENTS_CONTRACT_ID) {
 // Register the server key as an agent so it can cast reputation votes for the
 // demo (the backend signs reputation votes with this key by default — see
 // config.demo.voterSecrets). Idempotent: skips if already registered.
+//
+// Throws on failure: reputation voting is broken if the demo voter isn't a
+// registered agent, so we must not leave the deployment in that state silently.
 async function ensureServerVoterRegistered() {
   const address = config.server.address;
-  try {
-    const existing = await getAgent(address);
-    if (existing) {
-      logger.info({ address }, 'Server voter agent already registered — skipping');
-      return;
-    }
-    logger.info({ address }, 'Registering server key as reputation voter agent…');
-    await registerAgentOnChain(address, 'Lodestar Demo Voter', 'Backend demo agent used to cast reputation votes.');
-    logger.info({ address }, 'Server voter agent registered');
-  } catch (err) {
-    logger.error({ err, address }, 'Failed to register server voter agent');
+  const existing = await getAgent(address);
+  if (existing) {
+    logger.info({ address }, 'Server voter agent already registered — skipping');
+    return;
   }
+  logger.info({ address }, 'Registering server key as reputation voter agent…');
+  await registerAgentOnChain(address, 'Lodestar Demo Voter', 'Backend demo agent used to cast reputation votes.');
+  logger.info({ address }, 'Server voter agent registered');
 }
 
 // Use env secrets if provided, otherwise generate ephemeral keypairs.
@@ -75,7 +74,10 @@ async function seed() {
     const count = await getAgentCount();
     logger.info({ count }, 'Current agent count');
 
-    if (count >= AGENTS.length) {
+    // count now includes the server voter registered above, so the demo agents
+    // are fully seeded only once the count reaches AGENTS.length + 1.
+    const expectedCount = AGENTS.length + 1;
+    if (count >= expectedCount) {
       logger.info('Agents already seeded — skipping');
       process.exit(0);
     }
