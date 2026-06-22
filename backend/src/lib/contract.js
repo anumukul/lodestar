@@ -35,6 +35,10 @@ export function getSubmitQueueDepth() {
   return submitQueue.size + submitQueue.pending;
 }
 
+export async function drainSubmitQueue() {
+  await submitQueue.onIdle();
+}
+
 function getContract() {
   return new Contract(config.contract.id);
 }
@@ -80,7 +84,7 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function simulateAndSubmit(operation, signer) {
+async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const server = getStellarServer();
   const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
@@ -131,13 +135,10 @@ async function simulateAndSubmit(operation, signer) {
 
     if (isBadSeq && retryCount < 3) {
       logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
-      return _simulateAndSubmit(operation, retryCount + 1);
+      return _simulateAndSubmit(operation, signer, retryCount + 1);
     }
     throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, 'TRANSACTION_FAILED');
   }
-
-  // Optimistic increment on success
-  currentSeqNum += 1n;
 
   let getResult;
   for (let i = 0; i < 20; i++) {
@@ -148,6 +149,8 @@ async function simulateAndSubmit(operation, signer) {
       // Protocol-22 XDR parse errors on confirmed txs — treat as SUCCESS
       if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
         logger.warn({ hash: sendResult.hash }, 'getTransaction XDR parse error — assuming confirmed');
+        // Optimistic increment on success
+        currentSeqNum += 1n;
         return { status: 'SUCCESS', returnValue: null };
       }
       throw parseErr;
@@ -163,11 +166,14 @@ async function simulateAndSubmit(operation, signer) {
     throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
   }
 
+  // Optimistic increment on success
+  currentSeqNum += 1n;
+
   return getResult;
 }
 
-function simulateAndSubmit(operation) {
-  return submitQueue.add(() => _simulateAndSubmit(operation));
+function simulateAndSubmit(operation, signer) {
+  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
 async function simulateRead(operation) {

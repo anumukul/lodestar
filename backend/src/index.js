@@ -3,7 +3,7 @@ import cors from "cors";
 import config from "./config.js";
 import logger from "./lib/logger.js";
 import { checkRpcHealth } from "./lib/stellar.js";
-import { getSubmitQueueDepth } from "./lib/contract.js";
+import { getSubmitQueueDepth, drainSubmitQueue } from "./lib/contract.js";
 import registryRouter from "./routes/registry.js";
 import servicesRouter from "./routes/services.js";
 import demoRouter from "./routes/demo.js";
@@ -71,7 +71,7 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   logger.info(
     {
       port: config.port,
@@ -81,3 +81,20 @@ app.listen(config.port, () => {
     "Lodestar backend running",
   );
 });
+
+async function shutdown() {
+  logger.info("Shutting down gracefully...");
+  server.close(async () => {
+    logger.info("HTTP server closed.");
+    try {
+      await drainSubmitQueue();
+      logger.info("Submit queue drained.");
+    } catch (err) {
+      logger.error({ err }, "Error draining submit queue");
+    }
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
