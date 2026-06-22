@@ -170,11 +170,22 @@ async function fetchServices(category) {
 }
 
 async function submitReputation(id, positive) {
-  await fetch(`${LODESTAR_API_URL}/api/reputation/${id}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ positive }),
-  }).catch(() => {});
+  // Identify this agent so the backend/contract can authorize the vote. The
+  // backend only signs for registered demo agents it holds keys for; for other
+  // agents this is best-effort and a 403/cooldown rejection is expected. fetch
+  // only throws on network errors, so check response.ok before assuming success.
+  try {
+    const res = await fetch(`${LODESTAR_API_URL}/api/reputation/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positive, agent: AGENT_ADDRESS }),
+    });
+    if (!res.ok) {
+      logger.debug({ status: res.status }, `${tag()} Reputation vote not applied (best-effort)`);
+    }
+  } catch {
+    // Intentionally best-effort — a failed vote must not abort the agent run.
+  }
 }
 
 // ── Agent task ────────────────────────────────────────────────────────────────

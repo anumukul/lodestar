@@ -56,7 +56,8 @@ Lodestar is a Soroban smart contract that acts as a neutral, on-chain registry. 
 ### Provider flow
 1. Deploy any HTTP service that returns `402 Payment Required` with x402 headers
 2. Call `register_service` on the Lodestar Soroban contract with your endpoint, price, and category
-3. Your service is now permanently discoverable by any agent querying the registry
+3. If an active service with the same provider and endpoint already exists, registration is rejected to prevent duplicate active entries
+4. Your service is now permanently discoverable by any agent querying the registry
 
 ### Agent flow
 1. Call `list_services(category)` — returns active services sorted by reputation
@@ -250,7 +251,7 @@ The fix spans three layers:
 
 **2. Backend** (`backend/src/routes/agents.js`): The `GET /api/agents` route now accepts `?page=N&pageSize=M&sort=score|payments|newest`. An in-memory cache holds the full sorted agent list for 30 seconds (matching the frontend refresh interval), so Soroban is queried at most once per 30s no matter how many page changes the user makes. The route sorts from the cache and returns only the requested slice. The `/api/agents/stats` endpoint shares the same cache. When a new agent registers, the cache is invalidated immediately.
 
-**3. Frontend** (`frontend/app/agents/page.tsx`): `fetchAgents(page, pageSize, sort)` replaces the old `fetchAgents(100)`. Changing page, page size, or sort triggers a new API call — the browser never holds more than one page of agent data in memory. A `refreshing` state dims the grid during transitions instead of re-showing the skeleton, keeping navigation feel fast.
+**3. Frontend** (`frontend/app/agents/page.tsx`, `frontend/app/registry/page.tsx`): `fetchAgents(page, pageSize, sort)` replaces the old `fetchAgents(100)`. Changing page, page size, or sort triggers a new API call — the browser never holds more than one page of agent data in memory. Both pages use [SWR](https://swr.vercel.app/) keyed by their local UI state (`page`, `pageSize`, `sort` on the agents page; `activeCategory` on the registry page) instead of a manual `setInterval`: SWR dedupes concurrent/identical requests, revalidates every 30s (`refreshInterval`), and only re-renders when the returned data actually changes — eliminating the redundant requests and re-renders the old fixed poll caused. `keepPreviousData` keeps the current page visible (dimmed via the `refreshing` state) during a refresh instead of re-showing the skeleton, keeping navigation feel fast.
 
 ### UI Features
 

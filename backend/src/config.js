@@ -90,6 +90,23 @@ const config = Object.freeze({
   // client IP (X-Forwarded-For) when running behind a reverse proxy (e.g. Render).
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
+  // Reputation voting is gated on-chain: a vote must be signed by a registered
+  // agent (`caller.require_auth()` + cross-contract `is_registered`). The hosted
+  // backend can therefore only cast votes for agents whose secret keys it holds.
+  // `voterSecrets` is that allowlist of demo-agent signing keys. The server key
+  // always doubles as a demo voter; additional pre-funded, on-chain-registered
+  // demo agents can be added via DEMO_VOTER_SECRETS (comma-separated). Any other
+  // agent must submit its own wallet-signed transaction.
+  demo: {
+    voterSecrets: [
+      process.env.SERVER_STELLAR_SECRET,
+      ...(process.env.DEMO_VOTER_SECRETS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ],
+  },
+
   // Rate limiting for public write endpoints (anti-spam for on-chain writes).
   rateLimit: {
     // Generic limit applied to write routes (POST /reputation/:id, POST /agents/register).
@@ -100,6 +117,12 @@ const config = Object.freeze({
       windowMs: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_WINDOW_MS, 60_000, 'PAYMENT_RATE_LIMIT_WINDOW_MS'),
       max: parsePositiveInt(process.env.PAYMENT_RATE_LIMIT_MAX, 10, 'PAYMENT_RATE_LIMIT_MAX'),
     },
+  },
+
+  demoRun: {
+    pollMaxWaitMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_WAIT_MS, 8_000, 'DEMO_RUN_POLL_MAX_WAIT_MS'),
+    pollInitialDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_INITIAL_DELAY_MS, 250, 'DEMO_RUN_POLL_INITIAL_DELAY_MS'),
+    pollMaxDelayMs: parsePositiveInt(process.env.DEMO_RUN_POLL_MAX_DELAY_MS, 2_000, 'DEMO_RUN_POLL_MAX_DELAY_MS'),
   },
 });
 

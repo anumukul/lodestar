@@ -1,9 +1,9 @@
-import { vi, describe, it, expect } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../config.js', () => ({
   default: {
     contract: { id: 'mock', agentsId: 'mock' },
-    server: { address: 'mock', secret: 'mock' },
+    server: { address: 'mock', secret: 'SDY7R6HC2UK4D4CWWBKZBJTE6FLY5QHGQCK2U6U3R3KASMW5OPWMBDO2' },
     stellar: { network: 'testnet', rpcUrl: 'https://mock', networkPassphrase: 'mock', usdcContractId: 'mock' },
     x402: { facilitatorUrl: 'https://mock', searchPrice: '0.001', weatherPrice: '0.001' },
     braveApiKey: '',
@@ -15,7 +15,69 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-import { mapAgent, mapPolicy } from './contract.js';
+import * as contractLib from './contract.js';
+
+const { mapAgent, mapPolicy } = contractLib;
+
+describe('registerServiceOnChain duplicate checks', () => {
+  let activeServiceExistsSpy;
+
+  beforeEach(() => {
+    activeServiceExistsSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExists');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns true when an active service exists for the same provider and endpoint', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const endpoint = 'https://test.example.com';
+    activeServiceExistsSpy.mockResolvedValueOnce(true);
+
+    expect(await contractLib.activeServiceExists(provider, endpoint)).toBe(true);
+    expect(activeServiceExistsSpy).toHaveBeenCalledWith(provider, endpoint);
+  });
+
+  it('returns false when no matching active service exists', async () => {
+    activeServiceExistsSpy.mockResolvedValueOnce(false);
+
+    expect(await contractLib.activeServiceExists('GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ', 'https://test.example.com')).toBe(false);
+  });
+
+  it('throws when duplicate active service exists during registration', async () => {
+    activeServiceExistsSpy.mockResolvedValueOnce(true);
+
+    await expect(
+      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
+    ).rejects.toThrow('Active service with same provider and endpoint already exists');
+
+    expect(activeServiceExistsSpy).toHaveBeenCalled();
+  });
+});
+
+describe('activeServiceExists pagination', () => {
+  it('continues scanning when a page is shorter than the requested page size', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const endpoint = 'https://test.example.com';
+
+    const fetchServices = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { provider: 'GAOTHER', endpoint: 'https://other.example.com' },
+      ])
+      .mockResolvedValueOnce([
+        { provider, endpoint },
+      ]);
+
+    await expect(
+      contractLib.contractHelpers.activeServiceExists(provider, endpoint, fetchServices)
+    ).resolves.toBe(true);
+
+    expect(fetchServices).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
+    expect(fetchServices).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+  });
+});
 
 describe('mapAgent', () => {
   it('should map a basic agent object', () => {

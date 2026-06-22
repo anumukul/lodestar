@@ -6,6 +6,8 @@ import type { AgentStep } from '@/lib/types';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const EXPLORER_URL =
   process.env.NEXT_PUBLIC_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
+// Registered demo agent the backend signs reputation votes as.
+const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
 
 type ServiceNeed = 'weather' | 'search';
 
@@ -110,12 +112,16 @@ export default function AgentDemo() {
         price: best.price_usdc,
       });
 
-      // Update reputation positively
-      await fetch(`${API_URL}/api/reputation/${best.id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ positive: true }),
-      });
+      // Update reputation positively, signed on-chain as the demo agent.
+      // Best-effort: a missing agent config or the on-chain cooldown shouldn't
+      // fail the demo run that already succeeded.
+      if (DEMO_AGENT_ADDRESS) {
+        await fetch(`${API_URL}/api/reputation/${best.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ positive: true, agent: DEMO_AGENT_ADDRESS }),
+        }).catch(() => {});
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Agent run failed');
       setSteps((prev) => {

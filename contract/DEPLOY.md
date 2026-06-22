@@ -29,40 +29,87 @@ stellar keys generate deployer --network testnet
 stellar keys fund deployer --network testnet
 ```
 
-## 4. Build contract
+## 4. Build the contracts
 
 ```sh
+# Service registry
 cd contract
+stellar contract build
+
+# Agent credit scoring
+cd agents
 stellar contract build
 ```
 
-The compiled WASM will be at:
-`target/wasm32-unknown-unknown/release/lodestar_registry.wasm`
+The compiled WASM files will be at:
+- `contract/target/wasm32-unknown-unknown/release/lodestar_registry.wasm`
+- `contract/agents/target/wasm32v1-none/release/lodestar_agents.wasm`
 
-## 5. Deploy to testnet
+## 5. Deploy the agents contract first
+
+The registry is wired to the agents contract **at deploy time** (next step), so
+the agents contract must exist first.
 
 ```sh
 stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/lodestar_registry.wasm \
+  --wasm contract/agents/target/wasm32v1-none/release/lodestar_agents.wasm \
   --source deployer \
   --network testnet
 ```
 
-Copy the contract ID printed to stdout.
+Copy the printed agent contract ID — referred to below as `<AGENTS_CONTRACT_ID>`.
 
-## 6. Configure environment
+## 6. Deploy the registry contract
 
-Copy the contract ID into your `.env` files:
+Pass the agents contract ID as the registry's **constructor argument**. This is
+the only place reputation-voting authorization is configured: the agents address
+is fixed at deployment and can never be changed or hijacked by a later caller, so
+there is no separate (front-runnable) `init` step.
+
+```sh
+stellar contract deploy \
+  --wasm contract/target/wasm32-unknown-unknown/release/lodestar_registry.wasm \
+  --source deployer \
+  --network testnet \
+  -- --agents_contract <AGENTS_CONTRACT_ID>
+```
+
+Copy the printed registry contract ID — referred to below as `<CONTRACT_ID>`.
+
+## 7. Point the agents contract at the registry
+
+The agents contract verifies service providers against the registry, so link it
+back (one-time):
+
+```sh
+stellar contract invoke \
+  --id <AGENTS_CONTRACT_ID> \
+  --source deployer \
+  --network testnet \
+  -- init --registry_contract <CONTRACT_ID>
+```
+
+## 8. Configure environment
+
+Copy both contract IDs into your `.env` files:
 
 ```sh
 # backend/.env
-CONTRACT_ID=<paste contract id here>
+CONTRACT_ID=<registry contract id>
+AGENTS_CONTRACT_ID=<agent contract id>
 
 # frontend/.env.local
-NEXT_PUBLIC_CONTRACT_ID=<paste contract id here>
+NEXT_PUBLIC_CONTRACT_ID=<registry contract id>
+NEXT_PUBLIC_AGENT_CONTRACT_ID=<agent contract id>
 ```
 
-## 7. Run seed script
+The hosted backend casts reputation votes as a registered demo agent — by
+default its own server key (`SERVER_STELLAR_ADDRESS`), which `npm run seed-agents`
+registers as an agent. Set `NEXT_PUBLIC_DEMO_AGENT_ADDRESS` (frontend) to that
+address. To let other pre-funded demo agents vote, add their secrets to
+`DEMO_VOTER_SECRETS` (backend).
+
+## 9. Run seed script
 
 ```sh
 cd backend
@@ -71,29 +118,6 @@ node scripts/seed.js
 ```
 
 This pre-populates the registry with demo services.
-
-## 8. Deploy agent contract
-
-```sh
-cd contract/agents
-stellar contract build
-stellar contract deploy \
-  --wasm target/wasm32v1-none/release/lodestar_agents.wasm \
-  --source deployer \
-  --network testnet
-```
-
-Copy the printed contract ID.
-
-## 9. Add agent contract ID to env files
-
-```sh
-# backend/.env
-AGENTS_CONTRACT_ID=<paste agent contract id here>
-
-# frontend/.env.local
-NEXT_PUBLIC_AGENT_CONTRACT_ID=<paste agent contract id here>
-```
 
 ## 10. (Optional) Set demo agent secrets
 

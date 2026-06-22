@@ -43,13 +43,24 @@ export async function fetchServiceById(id: number): Promise<ServiceEntry> {
   return apiFetch<ServiceEntry>(`/api/services/${id}`);
 }
 
+// Reputation votes are cast on behalf of a registered demo agent; the backend
+// only signs for agents it holds keys for. Configure the public demo agent
+// address the UI votes as via NEXT_PUBLIC_DEMO_AGENT_ADDRESS.
+export const DEMO_AGENT_ADDRESS = process.env.NEXT_PUBLIC_DEMO_AGENT_ADDRESS ?? '';
+
 export async function submitReputation(
   id: number,
-  positive: boolean
+  positive: boolean,
+  agent: string = DEMO_AGENT_ADDRESS
 ): Promise<ReputationResponse> {
+  if (!agent) {
+    throw new Error(
+      'No voting agent configured. Set NEXT_PUBLIC_DEMO_AGENT_ADDRESS to a registered demo agent.'
+    );
+  }
   return apiFetch<ReputationResponse>(`/api/reputation/${id}`, {
     method: 'POST',
-    body: JSON.stringify({ positive }),
+    body: JSON.stringify({ positive, agent }),
   });
 }
 

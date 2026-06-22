@@ -14,6 +14,8 @@ import PQueue from 'p-queue';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
+import { ContractError } from './ContractError.js';
+import { recordReputationChange } from './reputationHistory.js';
 
 class ContractError extends Error {
   constructor(message, code) {
@@ -37,6 +39,36 @@ function getContract() {
   return new Contract(config.contract.id);
 }
 
+/**
+ * Allowlist of demo-agent signing keys the backend may cast reputation votes
+ * with, keyed by public address. Built lazily from config so an invalid secret
+ * surfaces clearly instead of crashing module load. The on-chain contract is the
+ * real enforcement (require_auth + is_registered); this just bounds which agents
+ * the hosted backend is willing to act for.
+ */
+let reputationVoters = null;
+function getReputationVoters() {
+  if (reputationVoters) return reputationVoters;
+  reputationVoters = new Map();
+  for (const secret of config.demo.voterSecrets) {
+    try {
+      const kp = Keypair.fromSecret(secret);
+      reputationVoters.set(kp.publicKey(), kp);
+    } catch {
+      logger.warn('Skipping invalid reputation voter secret in config');
+    }
+  }
+  return reputationVoters;
+}
+
+/**
+ * Whether the hosted backend is permitted to sign a reputation vote on behalf
+ * of `agentAddress` (i.e. it holds that demo agent's key).
+ */
+export function isAllowedReputationAgent(agentAddress) {
+  return getReputationVoters().has(agentAddress);
+}
+
 function getAgentsContract() {
   if (!config.contract.agentsId) {
     throw new Error('AGENTS_CONTRACT_ID is not set — deploy the agents contract first');
@@ -48,9 +80,9 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function _simulateAndSubmit(operation, retryCount = 0) {
+async function simulateAndSubmit(operation, signer) {
   const server = getStellarServer();
-  const keypair = getServerKeypair();
+  const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
   const now = Date.now();
@@ -239,45 +271,34 @@ export async function getServiceCount() {
   }
 }
 
-/**
- * Update a service's reputation on-chain and record the change history.
- * @param {number} id - The ID of the service to update
- * @param {boolean} positive - Whether to increase (true) or decrease (false) reputation by 1
- * @returns {Promise<number>} The new reputation value
- * @throws {Error} If the contract call fails or service can't be read
- */
-export async function updateReputation(id, positive) {
-  try {
-    const before = await getService(id);
-    if (!before) {
-      throw new Error(`Service ${id} not found before reputation update`);
+export const contractHelpers = {
+  activeServiceExists: async function (provider, endpoint, fetchServices = listServices) {
+    let page = 0;
+    const pageSize = 20;
+
+    while (true) {
+      const services = await fetchServices({ page, pageSize });
+      if (!services.length) {
+        return false;
+      }
+
+      if (services.some((s) => s.provider === provider && s.endpoint === endpoint)) {
+        return true;
+      }
+
+      page += 1;
     }
+  },
+};
 
-    const contract = getContract();
-    const op = contract.call(
-      'update_reputation',
-      nativeToScVal(BigInt(id), { type: 'u64' }),
-      nativeToScVal(positive, { type: 'bool' })
-    );
-    await simulateAndSubmit(op);
-    
-    const after = await getService(id);
-    if (!after) {
-      throw new Error(`Failed to read updated reputation for service ${id}`);
-    }
-
-    const newReputation = after.reputation;
-    const delta = newReputation - before.reputation;
-
-    recordReputationChange(id, Date.now(), delta, newReputation);
-
-    return newReputation;
-  } catch (err) {
-    logger.error({ err, id, positive }, 'updateReputation failed');
-    throw err;
-  }
+export async function activeServiceExists(provider, endpoint, fetchServices = listServices) {
+  return contractHelpers.activeServiceExists(provider, endpoint, fetchServices);
 }
 
+/**
+ * Register a service on-chain.
+ * Rejects duplicate active service entries for the same provider and endpoint.
+ */
 export async function registerServiceOnChain(
   name,
   description,
@@ -286,10 +307,19 @@ export async function registerServiceOnChain(
   category
 ) {
   try {
-    const contract = getContract();
     const keypair = getServerKeypair();
     const providerAddress = Address.fromString(keypair.publicKey());
+    const provider = providerAddress.toString();
 
+    if (await contractHelpers.activeServiceExists(provider, endpoint)) {
+      const err = new Error(
+        'Active service with same provider and endpoint already exists'
+      );
+      logger.warn({ provider, endpoint }, 'Duplicate active service registration blocked');
+      throw err;
+    }
+
+    const contract = getContract();
     const op = contract.call(
       'register_service',
       nativeToScVal(providerAddress, { type: 'address' }),
@@ -305,6 +335,60 @@ export async function registerServiceOnChain(
     return retval ? Number(scValToNative(retval)) : null;
   } catch (err) {
     logger.error({ err, name }, 'registerServiceOnChain failed');
+    throw err;
+  }
+}
+
+/**
+ * Update a service's reputation on-chain and record the change history.
+ *
+ * The vote is cast as `agentAddress`, which must be a registered agent the
+ * backend is allowed to sign for (see {@link isAllowedReputationAgent}). The
+ * on-chain contract independently enforces `require_auth` + agent registration +
+ * a per-(service, agent) cooldown, so this can never push an anonymous vote.
+ * @param {number} id - The ID of the service to update
+ * @param {boolean} positive - Whether to increase (true) or decrease (false) reputation by 1
+ * @param {string} agentAddress - Stellar address of the registered agent casting the vote
+ * @returns {Promise<number>} The new reputation value
+ * @throws {ContractError} If the agent is not permitted, or the contract call fails
+ */
+export async function updateReputation(id, positive, agentAddress) {
+  try {
+    const voter = getReputationVoters().get(agentAddress);
+    if (!voter) {
+      throw new ContractError(
+        'This agent is not permitted to vote through the hosted backend. Only registered demo agents may; other agents must submit a wallet-signed transaction.',
+        'AGENT_NOT_ALLOWED'
+      );
+    }
+
+    const before = await getService(id);
+    if (!before) {
+      throw new Error(`Service ${id} not found before reputation update`);
+    }
+
+    const contract = getContract();
+    const op = contract.call(
+      'update_reputation',
+      nativeToScVal(BigInt(id), { type: 'u64' }),
+      nativeToScVal(positive, { type: 'bool' }),
+      nativeToScVal(Address.fromString(agentAddress), { type: 'address' })
+    );
+    await simulateAndSubmit(op, voter);
+
+    const after = await getService(id);
+    if (!after) {
+      throw new Error(`Failed to read updated reputation for service ${id}`);
+    }
+
+    const newReputation = after.reputation;
+    const delta = newReputation - before.reputation;
+
+    recordReputationChange(id, Date.now(), delta, newReputation);
+
+    return newReputation;
+  } catch (err) {
+    logger.error({ err, id, positive }, 'updateReputation failed');
     throw err;
   }
 }

@@ -1,14 +1,20 @@
-import { vi, describe, it, expect, beforeAll } from 'vitest';
+import { vi, describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
 const mockListServices = vi.fn();
 const mockGetService = vi.fn();
+const mockGetServiceCount = vi.fn();
 const mockGetReputationHistory = vi.fn();
+const mockUpdateReputation = vi.fn();
+const mockIsAllowedReputationAgent = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
   getService: (...args) => mockGetService(...args),
+  getServiceCount: (...args) => mockGetServiceCount(...args),
+  updateReputation: (...args) => mockUpdateReputation(...args),
+  isAllowedReputationAgent: (...args) => mockIsAllowedReputationAgent(...args),
 }));
 
 vi.mock('../lib/reputationHistory.js', () => ({
@@ -245,6 +251,97 @@ describe('POST /api/reputation/:id — request body size limit', () => {
       .send({ positive: true });
 
     expect(res.status).not.toBe(413);
+  });
+});
+
+describe('POST /api/reputation/:id — authorization', () => {
+  const VALID_AGENT = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
+
+  beforeEach(() => {
+    mockUpdateReputation.mockReset();
+    mockIsAllowedReputationAgent.mockReset();
+  });
+
+  it('should return 400 when `positive` is missing', async () => {
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ agent: VALID_AGENT });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockUpdateReputation).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when `agent` is missing', async () => {
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockUpdateReputation).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 when `agent` is not a valid Stellar address', async () => {
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: 'not-an-address' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockUpdateReputation).not.toHaveBeenCalled();
+  });
+
+  it('should return 403 when the agent is not allowlisted', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(false);
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('AGENT_NOT_ALLOWED');
+    expect(mockUpdateReputation).not.toHaveBeenCalled();
+  });
+
+  it('should update reputation for an allowlisted agent', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockResolvedValueOnce(5);
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, newReputation: 5 });
+    expect(mockUpdateReputation).toHaveBeenCalledWith(1, true, VALID_AGENT);
+  });
+
+  it('should surface the on-chain cooldown rejection as an actionable 400', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockRejectedValueOnce(
+      new ContractError('Simulation failed: cooldown', 'SIMULATION_FAILED'),
+    );
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('SIMULATION_FAILED');
+  });
+
+  it('should return 500 on an unexpected error', async () => {
+    mockIsAllowedReputationAgent.mockReturnValue(true);
+    mockUpdateReputation.mockRejectedValueOnce(new Error('boom'));
+
+    const res = await request(app)
+      .post('/api/reputation/1')
+      .send({ positive: true, agent: VALID_AGENT });
+
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('UPDATE_ERROR');
   });
 });
 

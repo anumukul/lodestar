@@ -60,6 +60,11 @@ router.get('/weather', async (req, res) => {
     const lat = parseFloat(req.query.lat) || 40.7128;
     const lon = parseFloat(req.query.lon) || -74.006;
 
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      logger.warn({ lat, lon }, 'Invalid coordinates supplied to GET /demo/weather');
+      return res.status(400).json({ error: 'Coordinates out of range', code: 'INVALID_COORDINATES' });
+    }
+
     const url =
       `https://api.open-meteo.com/v1/forecast` +
       `?latitude=${lat}&longitude=${lon}` +
@@ -92,6 +97,7 @@ router.get('/weather', async (req, res) => {
       service: 'Lodestar Weather Service',
       amount: config.x402.weatherPrice,
       txHash,
+      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
     });
 
     if (agentAddress && config.contract.agentsId) {
@@ -149,6 +155,7 @@ router.get('/search', async (req, res) => {
       service: 'Lodestar Search Service',
       amount: config.x402.searchPrice,
       txHash: searchTxHash,
+      ...(req.query.demoRunId && { demoRunId: String(req.query.demoRunId) }),
     });
 
     if (searchAgentAddress && config.contract.agentsId) {

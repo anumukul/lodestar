@@ -4,11 +4,13 @@ import {
   getService,
   getServiceCount,
   updateReputation,
+  isAllowedReputationAgent,
 } from "../lib/contract.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
 import logger from "../lib/logger.js";
 import { ContractError } from "../lib/ContractError.js";
 import { writeRateLimiter } from "../middleware/rateLimiter.js";
+import { isValidStellarAddress } from "../middleware/addressValidator.js";
 
 const router = Router();
 
@@ -116,6 +118,10 @@ router.get("/stats", async (req, res) => {
   }
 });
 
+// POST /api/reputation/:id — Body: { positive: boolean, agent: string }
+// `agent` must be a registered agent the backend is allowed to sign for. The
+// on-chain contract enforces require_auth + agent registration + a per-agent
+// cooldown, so reputation can no longer be moved by anonymous callers.
 router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
   let id;
   try {
@@ -126,16 +132,42 @@ router.post("/reputation/:id", writeRateLimiter(), async (req, res) => {
         .json({ error: "Invalid service ID", code: "INVALID_ID" });
     }
 
-    const { positive } = req.body;
+    // Default to {} so a missing/non-JSON body yields a 400 INVALID_BODY rather
+    // than a TypeError surfacing as a generic 500.
+    const { positive, agent } = req.body ?? {};
     if (typeof positive !== "boolean") {
       return res
         .status(400)
         .json({ error: "`positive` must be a boolean", code: "INVALID_BODY" });
     }
+    if (!isValidStellarAddress(agent)) {
+      return res.status(400).json({
+        error: "`agent` must be a valid Stellar address",
+        code: "INVALID_BODY",
+      });
+    }
+    if (!isAllowedReputationAgent(agent)) {
+      return res.status(403).json({
+        error:
+          "This agent is not permitted to vote through the hosted backend. Only registered demo agents may; other agents must submit a wallet-signed transaction.",
+        code: "AGENT_NOT_ALLOWED",
+      });
+    }
 
-    const newReputation = await updateReputation(id, positive);
+    const newReputation = await updateReputation(id, positive, agent);
     res.json({ success: true, newReputation });
   } catch (err) {
+    if (err instanceof ContractError) {
+      if (err.code === "AGENT_NOT_ALLOWED") {
+        return res.status(403).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "TRANSACTION_TIMEOUT") {
+        return res.status(504).json({ error: err.message, code: err.code });
+      }
+      // SIMULATION_FAILED covers on-chain rejections such as the vote cooldown
+      // or an unregistered agent — surface it as an actionable 400.
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
     logger.error({ err, id }, "POST /api/reputation/:id failed");
     res.status(500).json({ error: "Failed to update reputation", code: "UPDATE_ERROR" });
   }
