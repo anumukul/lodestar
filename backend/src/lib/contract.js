@@ -10,14 +10,34 @@ const {
   scValToNative,
   rpc,
 } = pkg;
+import PQueue from 'p-queue';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
 import { recordReputationChange } from './reputationHistory.js';
 
+class ContractError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'ContractError';
+    this.code = code;
+  }
+}
 
 const TIMEOUT = 30;
+
+const submitQueue = new PQueue({ concurrency: 1 });
+let currentSeqNum = null;
+let lastSeqSyncTime = 0;
+
+export function getSubmitQueueDepth() {
+  return submitQueue.size + submitQueue.pending;
+}
+
+export async function drainSubmitQueue() {
+  await submitQueue.onIdle();
+}
 
 function getContract() {
   return new Contract(config.contract.id);
@@ -64,14 +84,21 @@ function getServerKeypair() {
   return Keypair.fromSecret(config.server.secret);
 }
 
-async function simulateAndSubmit(operation, signer) {
+async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   const server = getStellarServer();
   const keypair = signer ?? getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = await server.getAccount(keypair.publicKey());
+  const now = Date.now();
+  if (retryCount > 0 || currentSeqNum === null || (now - lastSeqSyncTime > 60000)) {
+    const account = await server.getAccount(keypair.publicKey());
+    currentSeqNum = BigInt(account.sequence);
+    lastSeqSyncTime = now;
+  }
 
-  const tx = new TransactionBuilder(account, {
+  const txAccount = new pkg.Account(keypair.publicKey(), currentSeqNum.toString());
+
+  const tx = new TransactionBuilder(txAccount, {
     fee: BASE_FEE,
     networkPassphrase: passphrase,
   })
@@ -90,7 +117,27 @@ async function simulateAndSubmit(operation, signer) {
 
   const sendResult = await server.sendTransaction(preparedTx);
   if (sendResult.status === 'ERROR') {
-    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
+    let isBadSeq = false;
+    if (sendResult.errorResultXdr) {
+      try {
+        const txResult = xdr.TransactionResult.fromXDR(sendResult.errorResultXdr, 'base64');
+        const code = txResult.result().switch().name;
+        if (code === 'txBadSeq' || code === 'txBAD_SEQ') {
+          isBadSeq = true;
+        }
+      } catch (e) {
+        // Ignore parse errors here
+      }
+    }
+    if (!isBadSeq && (JSON.stringify(sendResult).includes('txBAD_SEQ') || JSON.stringify(sendResult).includes('txBadSeq'))) {
+      isBadSeq = true;
+    }
+
+    if (isBadSeq && retryCount < 3) {
+      logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
+      return _simulateAndSubmit(operation, signer, retryCount + 1);
+    }
+    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, 'TRANSACTION_FAILED');
   }
 
   let getResult;
@@ -102,6 +149,8 @@ async function simulateAndSubmit(operation, signer) {
       // Protocol-22 XDR parse errors on confirmed txs — treat as SUCCESS
       if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
         logger.warn({ hash: sendResult.hash }, 'getTransaction XDR parse error — assuming confirmed');
+        // Optimistic increment on success
+        currentSeqNum += 1n;
         return { status: 'SUCCESS', returnValue: null };
       }
       throw parseErr;
@@ -117,7 +166,14 @@ async function simulateAndSubmit(operation, signer) {
     throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
   }
 
+  // Optimistic increment on success
+  currentSeqNum += 1n;
+
   return getResult;
+}
+
+function simulateAndSubmit(operation, signer) {
+  return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
 async function simulateRead(operation) {
