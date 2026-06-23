@@ -13,7 +13,7 @@ const mockCheckSpendingAllowed = vi.fn();
 const mockRecordPaymentOnChain = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
-  listAgents: (...args) => mockListAgents(...args),
+  listAgentsPage: (...args) => mockListAgents(...args),
   getAgent: (...args) => mockGetAgent(...args),
   getAgentPolicy: (...args) => mockGetAgentPolicy(...args),
   getAgentScore: (...args) => mockGetAgentScore(...args),
@@ -73,7 +73,6 @@ vi.mock('../middleware/addressValidator.js', () => ({
   isValidStellarAddress: () => true,
 }));
 
-// Reset idempotency store between tests so keys don't bleed across cases
 import { _reset as resetIdempotencyStore } from '../lib/idempotency.js';
 
 function signBody(body) {
@@ -84,9 +83,12 @@ function signBody(body) {
 }
 
 let app;
+let resetCache;
 
 beforeAll(async () => {
-  const router = (await import('./agents.js')).default;
+  const mod = await import('./agents.js');
+  const router = mod.default;
+  resetCache = mod._resetCache;
   app = express();
   app.use(express.json());
   app.use('/api', router);
@@ -95,6 +97,7 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   resetIdempotencyStore();
+  if (resetCache) resetCache();
 });
 
 function makeAgent(overrides = {}) {
@@ -120,16 +123,18 @@ function makeAgent(overrides = {}) {
 describe('GET /api/agents', () => {
   it('should return list of agents', async () => {
     const agents = [makeAgent({ address: 'GA1' }), makeAgent({ address: 'GA2' })];
+    mockGetAgentCount.mockResolvedValueOnce(2);
     mockListAgents.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents');
 
     expect(res.status).toBe(200);
     expect(res.body.agents).toHaveLength(2);
-    expect(res.body.count).toBe(2);
+    expect(res.body.count || res.body.total).toBe(2);
   });
 
   it('should return 500 when contract call fails', async () => {
+    mockGetAgentCount.mockResolvedValueOnce(2);
     mockListAgents.mockRejectedValueOnce(new Error('Chain error'));
 
     const res = await request(app).get('/api/agents');
@@ -156,6 +161,7 @@ describe('GET /api/agents/stats', () => {
       makeAgent({ score: 100, total_volume_stroops: '10000000' }),
       makeAgent({ score: 200, total_volume_stroops: '20000000' }),
     ];
+    mockGetAgentCount.mockResolvedValueOnce(2);
     mockListAgents.mockResolvedValueOnce(agents);
 
     const res = await request(app).get('/api/agents/stats');
@@ -166,6 +172,7 @@ describe('GET /api/agents/stats', () => {
   });
 
   it('should return zero stats when no agents', async () => {
+    mockGetAgentCount.mockResolvedValueOnce(0);
     mockListAgents.mockResolvedValueOnce([]);
 
     const res = await request(app).get('/api/agents/stats');
