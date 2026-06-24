@@ -23,10 +23,12 @@ describe('registerServiceOnChain duplicate checks', () => {
   let activeServiceExistsSpy;
 
   beforeEach(() => {
+    process.env.SEEDING_MODE = 'true';
     activeServiceExistsSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExists');
   });
 
   afterEach(() => {
+    delete process.env.SEEDING_MODE;
     vi.restoreAllMocks();
   });
 
@@ -54,6 +56,14 @@ describe('registerServiceOnChain duplicate checks', () => {
 
     expect(activeServiceExistsSpy).toHaveBeenCalled();
   });
+
+  it('rejects server-signed registration when seeding mode is disabled', async () => {
+    delete process.env.SEEDING_MODE;
+
+    await expect(
+      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
+    ).rejects.toThrow('Server-signed service registration is disabled');
+  });
 });
 
 describe('activeServiceExists pagination', () => {
@@ -76,6 +86,31 @@ describe('activeServiceExists pagination', () => {
 
     expect(fetchServices).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
     expect(fetchServices).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+  });
+});
+
+describe('listServicesByProvider pagination', () => {
+  it('collects matching services across every page', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const fetchServices = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { id: 1, provider },
+        { id: 2, provider: 'GAOTHER' },
+      ])
+      .mockResolvedValueOnce([
+        { id: 3, provider },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await expect(contractLib.listServicesByProvider(provider, fetchServices)).resolves.toEqual([
+      { id: 1, provider },
+      { id: 3, provider },
+    ]);
+
+    expect(fetchServices).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
+    expect(fetchServices).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+    expect(fetchServices).toHaveBeenNthCalledWith(3, { page: 2, pageSize: 20 });
   });
 });
 

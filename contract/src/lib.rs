@@ -357,8 +357,8 @@ impl LodestarRegistry {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Address, String,
+        testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+        Address, IntoVal, String,
     };
 
     fn setup_service(
@@ -631,6 +631,55 @@ mod test {
             &String::from_str(env, "G_TEST_PAYMENT"),
             &String::from_str(env, "compute"),
         )
+    }
+
+    #[test]
+    fn test_register_service_rejects_non_provider_auth() {
+        let env = Env::default();
+        let agents_id = env.register(MockAgents, ());
+        let registry_id = env.register(LodestarRegistry, (agents_id,));
+        let registry = LodestarRegistryClient::new(&env, &registry_id);
+
+        let provider = Address::generate(&env);
+        let different_signer = Address::generate(&env);
+        let name = String::from_str(&env, "Test Service");
+        let description = String::from_str(&env, "Test Description");
+        let endpoint = String::from_str(&env, "https://test.com");
+        let price = String::from_str(&env, "10");
+        let pay_to = String::from_str(&env, "G_TEST_PAYMENT");
+        let category = String::from_str(&env, "compute");
+
+        env.mock_auths(&[MockAuth {
+            address: &different_signer,
+            invoke: &MockAuthInvoke {
+                contract: &registry_id,
+                fn_name: "register_service",
+                args: (
+                    provider.clone(),
+                    name.clone(),
+                    description.clone(),
+                    endpoint.clone(),
+                    price.clone(),
+                    pay_to.clone(),
+                    category.clone(),
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        assert!(registry
+            .try_register_service(
+                &provider,
+                &name,
+                &description,
+                &endpoint,
+                &price,
+                &pay_to,
+                &category,
+            )
+            .is_err());
+        assert_eq!(registry.get_service_count(), 0);
     }
 
     #[test]

@@ -114,7 +114,7 @@ address. To let other pre-funded demo agents vote, add their secrets to
 ```sh
 cd backend
 npm install
-node scripts/seed.js
+SEEDING_MODE=true node scripts/seed.js
 ```
 
 This pre-populates the registry with demo services.

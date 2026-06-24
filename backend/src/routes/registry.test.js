@@ -3,18 +3,24 @@ import express from 'express';
 import request from 'supertest';
 
 const mockListServices = vi.fn();
+const mockListServicesByProvider = vi.fn();
 const mockGetService = vi.fn();
 const mockGetServiceCount = vi.fn();
 const mockGetReputationHistory = vi.fn();
 const mockUpdateReputation = vi.fn();
 const mockIsAllowedReputationAgent = vi.fn();
+const mockBuildUnsignedRegistryTx = vi.fn();
+const mockSubmitSignedRegistryTx = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
   listServices: (...args) => mockListServices(...args),
+  listServicesByProvider: (...args) => mockListServicesByProvider(...args),
   getService: (...args) => mockGetService(...args),
   getServiceCount: (...args) => mockGetServiceCount(...args),
   updateReputation: (...args) => mockUpdateReputation(...args),
   isAllowedReputationAgent: (...args) => mockIsAllowedReputationAgent(...args),
+  buildUnsignedRegistryTx: (...args) => mockBuildUnsignedRegistryTx(...args),
+  submitSignedRegistryTx: (...args) => mockSubmitSignedRegistryTx(...args),
 }));
 
 vi.mock('../lib/reputationHistory.js', () => ({
@@ -32,6 +38,7 @@ vi.mock('../middleware/rateLimiter.js', () => ({
 }));
 
 let app;
+const VALID_STELLAR_ADDRESS = 'GAMASX3TLJIDO42FO3GTX7IQAYN7RJ4U4CXJOROTB7RSV3NGPUEIEQH3';
 
 beforeAll(async () => {
   const router = (await import('./registry.js')).default;
@@ -48,7 +55,7 @@ function makeService(overrides = {}) {
     endpoint: 'https://test.example.com',
     price_usdc: '1.00',
     category: 'test',
-    provider: 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ',
+    provider: VALID_STELLAR_ADDRESS,
     reputation: 100,
     active: true,
     registered_at: 1000,
@@ -209,6 +216,165 @@ describe('GET /api/services', () => {
     expect(res.body.services).toHaveLength(2);
     expect(res.body.services.map((s) => s.id)).toEqual([1, 2]);
     expect(res.body.count).toBe(2);
+  });
+});
+
+describe('GET /api/registry/by-provider/:address', () => {
+  const PROVIDER = VALID_STELLAR_ADDRESS;
+
+  beforeEach(() => {
+    mockListServicesByProvider.mockReset();
+  });
+
+  it('returns services for the requested provider', async () => {
+    mockListServicesByProvider.mockResolvedValueOnce([
+      makeService({ id: 1, provider: PROVIDER }),
+      makeService({ id: 2, provider: PROVIDER }),
+    ]);
+
+    const res = await request(app).get(`/api/registry/by-provider/${PROVIDER}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+    expect(res.body.services).toHaveLength(2);
+    expect(mockListServicesByProvider).toHaveBeenCalledWith(PROVIDER);
+  });
+
+  it('rejects an invalid Stellar address', async () => {
+    const res = await request(app).get('/api/registry/by-provider/not-an-address');
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_ADDRESS');
+    expect(mockListServicesByProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/registry/prepare-register', () => {
+  const VALID_PROVIDER = VALID_STELLAR_ADDRESS;
+
+  beforeEach(() => {
+    mockBuildUnsignedRegistryTx.mockReset();
+  });
+
+  it('returns unsigned XDR for a valid registration request', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce('AAAA_TEST_XDR');
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ xdr: 'AAAA_TEST_XDR' });
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('register', VALID_PROVIDER, {
+      name: 'Weather Oracle',
+      description: 'Real-time weather data for autonomous agents.',
+      endpoint: 'https://weather.example.com',
+      priceUsdc: '0.001',
+      category: 'weather',
+      payTo: undefined,
+    });
+  });
+
+  it('rejects invalid registration payloads before building XDR', async () => {
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'No',
+        description: 'short',
+        endpoint: 'http://insecure.example.com',
+        priceUsdc: '0',
+        category: 'unknown',
+        providerAddress: 'bad',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it('surfaces duplicate-service conflicts as 409', async () => {
+    const { ContractError } = await import('../lib/ContractError.js');
+    mockBuildUnsignedRegistryTx.mockRejectedValueOnce(
+      new ContractError('Active service with same provider and endpoint already exists', 'DUPLICATE_SERVICE'),
+    );
+
+    const res = await request(app)
+      .post('/api/registry/prepare-register')
+      .send({
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('DUPLICATE_SERVICE');
+  });
+});
+
+describe('POST /api/registry/prepare-deactivate', () => {
+  const VALID_PROVIDER = VALID_STELLAR_ADDRESS;
+
+  beforeEach(() => {
+    mockBuildUnsignedRegistryTx.mockReset();
+  });
+
+  it('builds unsigned XDR for service deactivation', async () => {
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce('AAAA_DEACTIVATE_XDR');
+
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: VALID_PROVIDER, id: 7 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ xdr: 'AAAA_DEACTIVATE_XDR' });
+    expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('deactivate', VALID_PROVIDER, { id: 7 });
+  });
+
+  it('rejects invalid deactivation payloads', async () => {
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send({ providerAddress: 'bad', id: 0 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/registry/submit-signed-tx', () => {
+  beforeEach(() => {
+    mockSubmitSignedRegistryTx.mockReset();
+  });
+
+  it('submits wallet-signed registry transactions', async () => {
+    mockSubmitSignedRegistryTx.mockResolvedValueOnce({ hash: 'abc123', id: 12 });
+
+    const res = await request(app)
+      .post('/api/registry/submit-signed-tx')
+      .send({ signedXdr: 'AAAA_SIGNED_XDR' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, hash: 'abc123', id: 12 });
+  });
+
+  it('requires signedXdr in the request body', async () => {
+    const res = await request(app)
+      .post('/api/registry/submit-signed-tx')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockSubmitSignedRegistryTx).not.toHaveBeenCalled();
   });
 });
 
