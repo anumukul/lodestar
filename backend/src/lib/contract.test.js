@@ -490,12 +490,10 @@ describe('simulateReadBatch', () => {
   });
 
   it('returns empty array when operations is empty', async () => {
-    mockSimulateTransaction.mockResolvedValueOnce({ results: [] });
-
     const results = await contractLib.simulateReadBatch([]);
 
     expect(results).toEqual([]);
-    expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(0);
   });
 
   it('throws ContractError on simulation error', async () => {
@@ -503,6 +501,22 @@ describe('simulateReadBatch', () => {
     const ops = [contract.call('get_service_count')];
 
     await expect(contractLib.simulateReadBatch(ops)).rejects.toThrow('Batch simulation failed');
+  });
+
+  it('returns array of retvals for multiple operations', async () => {
+    mockSimulateTransaction
+      .mockResolvedValueOnce({ result: { retval: 'result_1' } })
+      .mockResolvedValueOnce({ result: { retval: 'result_2' } });
+
+    const ops = [
+      contract.call('get_service_count'),
+      contract.call('get_agent_count'),
+    ];
+
+    const results = await contractLib.simulateReadBatch(ops);
+
+    expect(results).toEqual(['result_1', 'result_2']);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(2);
   });
 });
 

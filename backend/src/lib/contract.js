@@ -228,32 +228,35 @@ async function simulateRead(operation) {
 }
 
 export async function simulateReadBatch(operations) {
+  if (operations.length === 0) return [];
+
   const server = getStellarServer();
   const keypair = getServerKeypair();
   const passphrase = getNetworkPassphrase();
 
-  const account = new Account(keypair.publicKey(), '0');
-
-  let builder = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: passphrase,
-  }).setTimeout(TIMEOUT);
-
+  const results = [];
   for (const op of operations) {
-    builder = builder.addOperation(op);
+    const account = new Account(keypair.publicKey(), '0');
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: passphrase,
+    })
+      .addOperation(op)
+      .setTimeout(TIMEOUT)
+      .build();
+
+    const simStart = Date.now();
+    const simResult = await server.simulateTransaction(tx);
+    logRpcCall('simulateTransaction', Date.now() - simStart);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new ContractError(`Batch simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
+    }
+
+    results.push(simResult.result?.retval);
   }
 
-  const tx = builder.build();
-
-  const simStart = Date.now();
-  const simResult = await server.simulateTransaction(tx);
-  logRpcCall('simulateTransaction', Date.now() - simStart);
-
-  if (rpc.Api.isSimulationError(simResult)) {
-    throw new ContractError(`Batch simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
-  }
-
-  return (simResult.results ?? []).map(r => r.retval);
+  return results;
 }
 
 
