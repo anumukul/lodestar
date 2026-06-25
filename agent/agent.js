@@ -24,11 +24,16 @@ const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
 const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
 const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
 const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
-  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',')
+  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
   : ['weather', 'search'];
 
 
-const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
+let agentKeypair;
+try {
+  agentKeypair = Keypair.fromSecret(AGENT_SECRET);
+} catch {
+  throw new Error(`Invalid AGENT_STELLAR_SECRET: unable to parse secret key`);
+}
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
@@ -271,10 +276,14 @@ export async function runTask(category, buildUrl, scoringEnabled, httpClient) {
 
   const paymentPayload = { url: endpointUrl, method: 'GET' };
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+  const PAYMENT_FETCH_TIMEOUT_MS = 30_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAYMENT_FETCH_TIMEOUT_MS);
   let response;
   try {
-    response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true });
+    response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true, signal: controller.signal });
   } catch (err) {
+    clearTimeout(timer);
     logger.error(
       {
         event: EVENT.PAYMENT_FAILED,
@@ -289,6 +298,7 @@ export async function runTask(category, buildUrl, scoringEnabled, httpClient) {
     );
     return { success: false, priceUsdc: best.price_usdc };
   }
+  clearTimeout(timer);
 
   if (!response.ok) {
     logger.error(
