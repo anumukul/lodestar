@@ -301,6 +301,7 @@ export async function runTask(category, buildUrl, scoringEnabled, httpClient) {
   clearTimeout(timer);
 
   if (!response.ok) {
+    await response.body?.cancel();
     logger.error(
       {
         event: EVENT.PAYMENT_FAILED,

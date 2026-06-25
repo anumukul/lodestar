@@ -37,7 +37,7 @@ process.env.AGENT_STELLAR_SECRET = 'STEST000000000000000000000000000000000000000
 process.env.STELLAR_RPC_URL      = 'https://mock-rpc.example.com';
 process.env.LODESTAR_API_URL     = 'http://localhost:9999';
 
-const mockHttpClient = { encodePaymentSignatureHeader: () => ({}) };
+const mockHttpClient = { encodePaymentSignatureHeader: vi.fn(() => ({})) };
 
 const { runTask, main, EVENT } = await import('./agent.js');
 
@@ -140,6 +140,14 @@ describe('runTask — happy path', () => {
     });
     expect(typeof call[0].taskDurationMs).toBe('number');
     expect(call[0].taskDurationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('calls encodePaymentSignatureHeader with expected payload', async () => {
+    await runTask('weather', (ep) => ep, true, mockHttpClient);
+
+    expect(mockHttpClient.encodePaymentSignatureHeader).toHaveBeenCalledWith(
+      { url: 'https://api.example.com/weather', method: 'GET' }
+    );
   });
 
   it('returns { success: true, priceUsdc } on success', async () => {
