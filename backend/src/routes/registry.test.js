@@ -10,6 +10,7 @@ const mockGetReputationHistory = vi.fn();
 const mockUpdateReputation = vi.fn();
 const mockIsAllowedReputationAgent = vi.fn();
 const mockBuildUnsignedRegistryTx = vi.fn();
+const mockValidatePreparedRegistrySubmission = vi.fn();
 const mockSubmitSignedRegistryTx = vi.fn();
 
 vi.mock('../lib/contract.js', () => ({
@@ -20,6 +21,7 @@ vi.mock('../lib/contract.js', () => ({
   updateReputation: (...args) => mockUpdateReputation(...args),
   isAllowedReputationAgent: (...args) => mockIsAllowedReputationAgent(...args),
   buildUnsignedRegistryTx: (...args) => mockBuildUnsignedRegistryTx(...args),
+  validatePreparedRegistrySubmission: (...args) => mockValidatePreparedRegistrySubmission(...args),
   submitSignedRegistryTx: (...args) => mockSubmitSignedRegistryTx(...args),
 }));
 
@@ -257,7 +259,10 @@ describe('POST /api/registry/prepare-register', () => {
   });
 
   it('returns unsigned XDR for a valid registration request', async () => {
-    mockBuildUnsignedRegistryTx.mockResolvedValueOnce('AAAA_TEST_XDR');
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_TEST_XDR',
+      submitToken: 'submit-token-1',
+    });
 
     const res = await request(app)
       .post('/api/registry/prepare-register')
@@ -271,7 +276,7 @@ describe('POST /api/registry/prepare-register', () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ xdr: 'AAAA_TEST_XDR' });
+    expect(res.body).toEqual({ xdr: 'AAAA_TEST_XDR', submitToken: 'submit-token-1' });
     expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('register', VALID_PROVIDER, {
       name: 'Weather Oracle',
       description: 'Real-time weather data for autonomous agents.',
@@ -282,17 +287,77 @@ describe('POST /api/registry/prepare-register', () => {
     });
   });
 
-  it('rejects invalid registration payloads before building XDR', async () => {
+  it.each([
+    [
+      'providerAddress',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: 'bad',
+      },
+    ],
+    [
+      'name',
+      {
+        name: 'No',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'description',
+      {
+        name: 'Weather Oracle',
+        description: 'short',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'endpoint',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'http://insecure.example.com',
+        priceUsdc: '0.001',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'priceUsdc',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001abc',
+        category: 'weather',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+    [
+      'category',
+      {
+        name: 'Weather Oracle',
+        description: 'Real-time weather data for autonomous agents.',
+        endpoint: 'https://weather.example.com',
+        priceUsdc: '0.001',
+        category: 'unknown',
+        providerAddress: VALID_PROVIDER,
+      },
+    ],
+  ])('rejects invalid registration %s before building XDR', async (_field, body) => {
     const res = await request(app)
       .post('/api/registry/prepare-register')
-      .send({
-        name: 'No',
-        description: 'short',
-        endpoint: 'http://insecure.example.com',
-        priceUsdc: '0',
-        category: 'unknown',
-        providerAddress: 'bad',
-      });
+      .send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -329,21 +394,37 @@ describe('POST /api/registry/prepare-deactivate', () => {
   });
 
   it('builds unsigned XDR for service deactivation', async () => {
-    mockBuildUnsignedRegistryTx.mockResolvedValueOnce('AAAA_DEACTIVATE_XDR');
+    mockBuildUnsignedRegistryTx.mockResolvedValueOnce({
+      xdr: 'AAAA_DEACTIVATE_XDR',
+      submitToken: 'submit-token-2',
+    });
 
     const res = await request(app)
       .post('/api/registry/prepare-deactivate')
       .send({ providerAddress: VALID_PROVIDER, id: 7 });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ xdr: 'AAAA_DEACTIVATE_XDR' });
+    expect(res.body).toEqual({ xdr: 'AAAA_DEACTIVATE_XDR', submitToken: 'submit-token-2' });
     expect(mockBuildUnsignedRegistryTx).toHaveBeenCalledWith('deactivate', VALID_PROVIDER, { id: 7 });
   });
 
-  it('rejects invalid deactivation payloads', async () => {
+  it('rejects invalid providerAddress in deactivation payloads', async () => {
     const res = await request(app)
       .post('/api/registry/prepare-deactivate')
       .send({ providerAddress: 'bad', id: 0 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockBuildUnsignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { providerAddress: VALID_PROVIDER, id: '7abc' },
+    { providerAddress: VALID_PROVIDER, id: 7.9 },
+  ])('rejects invalid deactivation id %o', async (body) => {
+    const res = await request(app)
+      .post('/api/registry/prepare-deactivate')
+      .send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
@@ -353,27 +434,42 @@ describe('POST /api/registry/prepare-deactivate', () => {
 
 describe('POST /api/registry/submit-signed-tx', () => {
   beforeEach(() => {
+    mockValidatePreparedRegistrySubmission.mockReset();
     mockSubmitSignedRegistryTx.mockReset();
   });
 
   it('submits wallet-signed registry transactions', async () => {
+    mockValidatePreparedRegistrySubmission.mockReturnValueOnce({ action: 'register' });
     mockSubmitSignedRegistryTx.mockResolvedValueOnce({ hash: 'abc123', id: 12 });
 
     const res = await request(app)
       .post('/api/registry/submit-signed-tx')
-      .send({ signedXdr: 'AAAA_SIGNED_XDR' });
+      .send({ signedXdr: 'AAAA_SIGNED_XDR', submitToken: 'submit-token-1' });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, hash: 'abc123', id: 12 });
+    expect(mockValidatePreparedRegistrySubmission).toHaveBeenCalledWith('submit-token-1', 'AAAA_SIGNED_XDR');
   });
 
   it('requires signedXdr in the request body', async () => {
     const res = await request(app)
       .post('/api/registry/submit-signed-tx')
-      .send({});
+      .send({ submitToken: 'submit-token-1' });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockValidatePreparedRegistrySubmission).not.toHaveBeenCalled();
+    expect(mockSubmitSignedRegistryTx).not.toHaveBeenCalled();
+  });
+
+  it('requires submitToken in the request body', async () => {
+    const res = await request(app)
+      .post('/api/registry/submit-signed-tx')
+      .send({ signedXdr: 'AAAA_SIGNED_XDR' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_BODY');
+    expect(mockValidatePreparedRegistrySubmission).not.toHaveBeenCalled();
     expect(mockSubmitSignedRegistryTx).not.toHaveBeenCalled();
   });
 });

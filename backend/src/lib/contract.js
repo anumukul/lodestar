@@ -7,11 +7,13 @@ const {
   BASE_FEE,
   xdr,
   Address,
+  StrKey,
   nativeToScVal,
   scValToNative,
   rpc,
 } = pkg;
 import PQueue from 'p-queue';
+import { randomUUID } from 'node:crypto';
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
@@ -19,10 +21,12 @@ import { ContractError } from './ContractError.js';
 
 
 const TIMEOUT = 30;
+const REGISTRY_SUBMIT_TOKEN_TTL_MS = 10 * 60 * 1000;
 
 const submitQueue = new PQueue({ concurrency: 1 });
 let currentSeqNum = null;
 let lastSeqSyncTime = 0;
+const preparedRegistrySubmissions = new Map();
 
 export function getSubmitQueueDepth() {
   return submitQueue.size + submitQueue.pending;
@@ -167,6 +171,24 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
 
 function simulateAndSubmit(operation, signer) {
   return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
+}
+
+function prunePreparedRegistrySubmissions(now = Date.now()) {
+  for (const [token, entry] of preparedRegistrySubmissions.entries()) {
+    if (entry.expiresAt <= now) {
+      preparedRegistrySubmissions.delete(token);
+    }
+  }
+}
+
+function createPreparedRegistrySubmission(action, xdrBase64) {
+  prunePreparedRegistrySubmissions();
+  const submitToken = randomUUID();
+  preparedRegistrySubmissions.set(submitToken, {
+    action,
+    expiresAt: Date.now() + REGISTRY_SUBMIT_TOKEN_TTL_MS,
+  });
+  return { xdr: xdrBase64, submitToken };
 }
 
 async function buildUnsignedTx(operation) {
@@ -413,7 +435,8 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
       nativeToScVal(params.category, { type: 'string' })
     );
 
-    return buildUnsignedTx(op);
+    const xdr = await buildUnsignedTx(op);
+    return createPreparedRegistrySubmission(action, xdr);
   }
 
   if (action === 'deactivate') {
@@ -423,10 +446,52 @@ export async function buildUnsignedRegistryTx(action, providerAddress, params = 
       nativeToScVal(BigInt(params.id), { type: 'u64' })
     );
 
-    return buildUnsignedTx(op);
+    const xdr = await buildUnsignedTx(op);
+    return createPreparedRegistrySubmission(action, xdr);
   }
 
   throw new Error(`Unknown registry action: ${action}`);
+}
+
+export function validatePreparedRegistrySubmission(submitToken, signedXdr) {
+  prunePreparedRegistrySubmissions();
+
+  if (!submitToken || typeof submitToken !== 'string') {
+    throw new ContractError('`submitToken` is required', 'INVALID_BODY');
+  }
+
+  const prepared = preparedRegistrySubmissions.get(submitToken);
+  if (!prepared) {
+    throw new ContractError('Registry submission token is missing or expired', 'INVALID_SUBMIT_TOKEN');
+  }
+
+  let tx;
+  try {
+    tx = new Transaction(signedXdr, getNetworkPassphrase());
+  } catch {
+    throw new ContractError('`signedXdr` must be a valid transaction XDR', 'INVALID_BODY');
+  }
+
+  const [operation] = tx.operations;
+  const expectedFunctionName = prepared.action === 'register'
+    ? 'register_service'
+    : 'deactivate_service';
+
+  const isRegistryInvocation = Boolean(
+    operation &&
+    tx.operations.length === 1 &&
+    operation.type === 'invokeHostFunction' &&
+    operation.func.switch().name === 'hostFunctionTypeInvokeContract' &&
+    StrKey.encodeContract(operation.func.invokeContract().contractAddress().contractId()) === config.contract.id &&
+    operation.func.invokeContract().functionName().toString() === expectedFunctionName
+  );
+
+  if (!isRegistryInvocation) {
+    throw new ContractError('signedXdr does not match the prepared registry transaction', 'SUBMISSION_MISMATCH');
+  }
+
+  preparedRegistrySubmissions.delete(submitToken);
+  return prepared;
 }
 
 /**
@@ -828,8 +893,10 @@ export async function buildUnsignedAgentTx(action, agentAddress, params = {}) {
 async function submitSignedTx(signedXdr) {
   const server = getStellarServer();
   const passphrase = getNetworkPassphrase();
+  const keypair = getServerKeypair();
 
   const tx = new Transaction(signedXdr, passphrase);
+  tx.sign(keypair);
 
   const sendResult = await server.sendTransaction(tx);
   if (sendResult.status === 'ERROR') {

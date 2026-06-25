@@ -44,7 +44,9 @@ export async function fetchServiceById(id: number): Promise<ServiceEntry> {
 }
 
 export async function fetchServicesByProvider(address: string): Promise<ServiceEntry[]> {
-  const data = await apiFetch<ServicesResponse>(`/api/registry/by-provider/${address}`);
+  const data = await apiFetch<ServicesResponse>(
+    `/api/registry/by-provider/${encodeURIComponent(address)}`
+  );
   return data.services;
 }
 
@@ -79,6 +81,7 @@ export interface RegisterFormData {
 
 interface PreparedRegistryTxResponse {
   xdr: string;
+  submitToken: string;
 }
 
 interface SubmittedRegistryTxResponse {
@@ -107,10 +110,14 @@ export async function registerService(
   const signedXdr = await signTx(prepared.xdr);
   const result = await apiFetch<SubmittedRegistryTxResponse>('/api/registry/submit-signed-tx', {
     method: 'POST',
-    body: JSON.stringify({ signedXdr }),
+    body: JSON.stringify({ signedXdr, submitToken: prepared.submitToken }),
   });
 
-  return { txHash: result.hash, id: result.id ?? 0 };
+  if (!result.success || result.id == null) {
+    throw new Error('Registration submitted but no service id was returned');
+  }
+
+  return { txHash: result.hash, id: result.id };
 }
 
 // ── Agent Credit Scoring ──────────────────────────────────────────────────────

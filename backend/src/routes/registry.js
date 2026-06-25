@@ -7,6 +7,7 @@ import {
   updateReputation,
   isAllowedReputationAgent,
   buildUnsignedRegistryTx,
+  validatePreparedRegistrySubmission,
   submitSignedRegistryTx,
 } from "../lib/contract.js";
 import { getReputationHistory } from "../lib/reputationHistory.js";
@@ -19,6 +20,42 @@ const router = Router();
 
 const PAGE_SIZE = 20;
 const SERVICE_CATEGORIES = new Set(["search", "weather", "finance", "ai", "data", "compute"]);
+const PRICE_USDC_REGEX = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+function normalizePriceUsdc(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    const normalized = String(value);
+    if (!PRICE_USDC_REGEX.test(normalized)) return null;
+    return value >= 0.0001 ? normalized : null;
+  }
+
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized !== value || !PRICE_USDC_REGEX.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0.0001) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function parsePositiveSafeInteger(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
 
 router.get("/services", async (req, res) => {
   try {
@@ -176,24 +213,24 @@ router.post("/registry/prepare-register", writeRateLimiter(), async (req, res) =
       return res.status(400).json({ error: "`category` is invalid", code: "INVALID_BODY" });
     }
 
-    const parsedPrice = typeof priceUsdc === "number" ? priceUsdc : parseFloat(String(priceUsdc ?? ""));
-    if (!Number.isFinite(parsedPrice) || parsedPrice < 0.0001) {
+    const normalizedPriceUsdc = normalizePriceUsdc(priceUsdc);
+    if (!normalizedPriceUsdc) {
       return res.status(400).json({ error: "`priceUsdc` must be at least 0.0001", code: "INVALID_BODY" });
     }
     if (payTo !== undefined && (typeof payTo !== "string" || payTo.trim().length === 0)) {
       return res.status(400).json({ error: "`payTo` must be a non-empty string when provided", code: "INVALID_BODY" });
     }
 
-    const xdr = await buildUnsignedRegistryTx("register", providerAddress, {
+    const prepared = await buildUnsignedRegistryTx("register", providerAddress, {
       name: name.trim(),
       description: description.trim(),
       endpoint: endpoint.trim(),
-      priceUsdc: String(priceUsdc),
+      priceUsdc: normalizedPriceUsdc,
       category,
       payTo: payTo?.trim(),
     });
     logger.info({ providerAddress, endpoint, category }, "Built unsigned registry registration tx");
-    res.json({ xdr });
+    res.json(prepared);
   } catch (err) {
     if (err instanceof ContractError) {
       const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : err.code === "DUPLICATE_SERVICE" ? 409 : 400;
@@ -211,14 +248,14 @@ router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res)
       return res.status(400).json({ error: "`providerAddress` must be a valid Stellar address", code: "INVALID_BODY" });
     }
 
-    const parsedId = Number.parseInt(String(id ?? ""), 10);
-    if (!Number.isInteger(parsedId) || parsedId < 1) {
+    const parsedId = parsePositiveSafeInteger(id);
+    if (parsedId == null) {
       return res.status(400).json({ error: "`id` must be a positive integer", code: "INVALID_BODY" });
     }
 
-    const xdr = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
+    const prepared = await buildUnsignedRegistryTx("deactivate", providerAddress, { id: parsedId });
     logger.info({ providerAddress, id: parsedId }, "Built unsigned registry deactivation tx");
-    res.json({ xdr });
+    res.json(prepared);
   } catch (err) {
     if (err instanceof ContractError) {
       const status = err.code === "TRANSACTION_TIMEOUT" ? 504 : 400;
@@ -231,10 +268,14 @@ router.post("/registry/prepare-deactivate", writeRateLimiter(), async (req, res)
 
 router.post("/registry/submit-signed-tx", writeRateLimiter(), async (req, res) => {
   try {
-    const { signedXdr } = req.body ?? {};
+    const { signedXdr, submitToken } = req.body ?? {};
     if (!signedXdr || typeof signedXdr !== "string") {
       return res.status(400).json({ error: "`signedXdr` is required", code: "INVALID_BODY" });
     }
+    if (!submitToken || typeof submitToken !== "string") {
+      return res.status(400).json({ error: "`submitToken` is required", code: "INVALID_BODY" });
+    }
+    validatePreparedRegistrySubmission(submitToken, signedXdr);
 
     const result = await submitSignedRegistryTx(signedXdr);
     logger.info({ hash: result.hash, id: result.id }, "Submitted wallet-signed registry tx");
